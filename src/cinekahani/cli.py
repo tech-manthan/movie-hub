@@ -17,6 +17,13 @@ from .script.formats import FORMATS
 from .script.generate import (ScriptEditedError, ScriptNotReady, approve_script, generate_script,
                               script_path)
 from .script.llm import ClaudeCli, LlmError
+from .assemble import music as music_lib
+from .assemble.build import build_video
+from .assemble.render import RenderError
+from .core.variety import Variety
+from .visuals import trailer as trailer_mod
+from .visuals.plan import GuardrailError
+from .visuals.styles import STYLES
 from .voice.client import VoiceError, VoiceStudioClient
 from .voice.narrate import narrate as run_narrate
 
@@ -154,6 +161,81 @@ def narrate(ctx: typer.Context, slug: str, format: str = typer.Option("review", 
                        f"({r.generated} spoken, {r.cached} reused)")
     except (FileNotFoundError, ScriptNotReady, VoiceError) as exc:
         _fail(str(exc))
+
+
+music_app = typer.Typer(help="Royalty-free music library with a license log.", no_args_is_help=True)
+app.add_typer(music_app, name="music")
+
+
+@music_app.command("add")
+def music_add(ctx: typer.Context, file: Path, license: str = typer.Option(..., help="cc0, pixabay, royalty-free, cc-by, public-domain, own"),
+              source: str = typer.Option("", help="Where you got it (URL)"), title: str = "", artist: str = "",
+              credit: str = typer.Option("", help="Credit line (required for cc-by)"), mood: str = typer.Option("", help="calm, upbeat, tense, dramatic, mysterious")):
+    """Copy a track into music/ and log its license. NC/ND licenses are refused."""
+    s = _settings(ctx)
+    try:
+        t = music_lib.add_track(s.path("music"), file, s.video.music, license=license, source=source,
+                                title=title, artist=artist, credit=credit, mood=mood)
+    except music_lib.MusicError as exc:
+        _fail(str(exc))
+    typer.echo(f"added {t.file} ({t.license})")
+
+
+@music_app.command("list")
+def music_list(ctx: typer.Context):
+    """Show the tracks the pipeline may use."""
+    s = _settings(ctx)
+    ok = {t.file for t in music_lib.eligible(s.path("music"), s.video.music)}
+    tracks = music_lib.load_tracks(s.path("music"))
+    for t in tracks:
+        typer.echo(f"{'usable ' if t.file in ok else 'BLOCKED'} {t.file}  [{t.license}] {t.mood or '-'}  {t.source}")
+    if not tracks:
+        typer.echo("No music yet. Add tracks with `cinekahani music add FILE --license cc0 --source URL`.")
+
+
+trailer_app = typer.Typer(help="Optional trailer snippets (supporting footage only).", no_args_is_help=True)
+app.add_typer(trailer_app, name="trailer")
+
+
+@trailer_app.command("fetch")
+def trailer_fetch(ctx: typer.Context, slug: str, yes: bool = typer.Option(False, "--yes", help="I accept the risk in the notice")):
+    """Download the official trailer once, to cut 2-3 second snippets from."""
+    s = _settings(ctx)
+    typer.secho(trailer_mod.NOTICE, fg=typer.colors.YELLOW)
+    if not yes:
+        _fail("Re-run with --yes to confirm.")
+    try:
+        project = Project.open(s.path("projects"), slug)
+        path = trailer_mod.fetch_trailer(s, project, load_meta(project).trailer_youtube_id)
+    except (FileNotFoundError, trailer_mod.TrailerError) as exc:
+        _fail(str(exc))
+    typer.echo(f"trailer source: {path}")
+
+
+@app.command()
+def build(ctx: typer.Context, slug: str, format: str = typer.Option("review", "--format", "-f"),
+          lang: str = typer.Option("both", "--lang", "-l", help="en, hi or both"),
+          style: Optional[str] = typer.Option(None, help=" | ".join(STYLES) + " (default: rotates)"),
+          no_trailer: bool = typer.Option(False, help="Artwork only"),
+          force: bool = typer.Option(False)):
+    """Phase 3: assemble the 16:9 video (artwork, optional snippets, subtitles, music, intro/outro)."""
+    s = _settings(ctx)
+    try:
+        project = Project.open(s.path("projects"), slug)
+        meta_ = load_meta(project)
+        for lg in (["en", "hi"] if lang == "both" else [lang]):
+            r = build_video(s, project, meta_, format, lg, style_key=style, force=force, use_trailer=not no_trailer)
+            typer.echo(f"{r.video} [{r.decision.value}] style={r.report['style']} {r.report['duration']}s "
+                       f"trailer={r.report['trailer_share']:.1%}")
+    except (FileNotFoundError, KeyError, RenderError, GuardrailError, trailer_mod.TrailerError) as exc:
+        _fail(str(exc.args[0] if isinstance(exc, KeyError) else exc))
+
+
+@app.command()
+def suggest(ctx: typer.Context):
+    """Which script format to make next, so videos stay varied."""
+    s = _settings(ctx)
+    typer.echo(Variety(s.path("projects")).suggest_format(list(FORMATS)))
 
 
 @app.command()

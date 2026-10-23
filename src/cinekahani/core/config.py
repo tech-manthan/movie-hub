@@ -90,7 +90,6 @@ class SubtitleCfg(BaseModel):
 
 class MusicCfg(BaseModel):
     volume: float = 0.10
-    duck_volume: float = 0.05        # level while narration speaks
     fade_s: float = 3
     allowed_licenses: list[str] = ["cc0", "pixabay", "royalty-free", "cc-by", "public-domain", "own"]
     avoid_recent: int = 3            # do not reuse a track used in the last N videos

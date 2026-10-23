@@ -24,6 +24,9 @@ from .core.variety import Variety
 from .visuals import trailer as trailer_mod
 from .visuals.plan import GuardrailError
 from .visuals.styles import STYLES
+from .shorts import service as shorts_service
+from .shorts.client import OpenShortsClient, ShortsError
+from .shorts.make import make_shorts
 from .voice.client import VoiceError, VoiceStudioClient
 from .voice.narrate import narrate as run_narrate
 
@@ -236,6 +239,49 @@ def suggest(ctx: typer.Context):
     """Which script format to make next, so videos stay varied."""
     s = _settings(ctx)
     typer.echo(Variety(s.path("projects")).suggest_format(list(FORMATS)))
+
+
+shorts_app = typer.Typer(help="Phase 4: Shorts/Reels with OpenShorts (runs in Docker).", no_args_is_help=True)
+app.add_typer(shorts_app, name="shorts")
+
+
+@shorts_app.command("up")
+def shorts_up(ctx: typer.Context):
+    """Start the OpenShorts container."""
+    s = _settings(ctx)
+    try:
+        started = shorts_service.start(s, OpenShortsClient(s.shorts, s.env))
+    except ShortsError as exc:
+        _fail(str(exc))
+    typer.echo("OpenShorts started" if started else "OpenShorts was already running")
+
+
+@shorts_app.command("down")
+def shorts_down(ctx: typer.Context):
+    """Stop the OpenShorts container (frees RAM for the other steps)."""
+    try:
+        shorts_service.stop(_settings(ctx))
+    except ShortsError as exc:
+        _fail(str(exc))
+
+
+@shorts_app.command("make")
+def shorts_make(ctx: typer.Context, slug: str, format: str = typer.Option("review", "--format", "-f"),
+                lang: str = typer.Option("both", "--lang", "-l", help="en, hi or both"),
+                keep_running: bool = typer.Option(False, help="Do not start/stop Docker for me"),
+                force: bool = typer.Option(False)):
+    """Cut the finished long video into vertical clips with captions and hooks."""
+    s = _settings(ctx)
+    try:
+        project = Project.open(s.path("projects"), slug)
+        client = OpenShortsClient(s.shorts, s.env)
+        for lg in (["en", "hi"] if lang == "both" else [lang]):
+            r = make_shorts(s, project, format, lg, client, force=force, manage_service=not keep_running)
+            typer.echo(f"{r.folder}: {len(r.clips)} Short(s), {len(r.rejected)} rejected [{r.decision.value}]")
+            for rej in r.rejected:
+                typer.secho(f"  rejected clip {rej['index']}: {rej['rejected']}", fg=typer.colors.YELLOW)
+    except (FileNotFoundError, ShortsError) as exc:
+        _fail(str(exc))
 
 
 @app.command()

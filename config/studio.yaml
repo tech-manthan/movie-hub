@@ -50,3 +50,61 @@ guardrails:
 cooldown:
   between_chunks_s: 20       # pause between heavy chunks (fanless MacBook Air)
   check_thermal: true
+
+# ---- Phase 2: narration (VoiceStudio runs as its own app; we only call its local API) ----
+voice:
+  base_url: http://127.0.0.1:3900
+  engine: voxcpm2            # Apache-2.0 weights. Do NOT use omnivoice on a monetized channel (non-commercial).
+  speed: 1.0
+  seed: 42
+  max_chunk_chars: 350       # text is spoken in chunks; each one is cached
+  pause_ms: {paragraph: 450, section: 900}
+  # `cinekahani voice setup` stores your voice profile ids in config/studio.local.yaml
+
+# ---- Phase 3: video ----
+video:
+  width: 1920
+  height: 1080
+  fps: 30
+  encoder: auto              # auto = Mac hardware encoder (h264_videotoolbox) when available, else libx264
+  shot_seconds: [5, 9]
+  intro_seconds: 3
+  outro_seconds: 5
+  batch_size: 6              # shots rendered before a cooldown pause
+  subtitles:
+    enabled: true
+    font: {en: Arial, hi: Kohinoor Devanagari}
+    size: 54
+  music:
+    volume: 0.10
+    allowed_licenses: [cc0, pixabay, royalty-free, cc-by, public-domain, own]
+    avoid_recent: 3
+
+# ---- Phase 4: Shorts/Reels (OpenShorts in Docker, cloned WITHOUT its cloud/ folder) ----
+shorts:
+  base_url: http://127.0.0.1:8000
+  target_clips: 4
+  min_seconds: 20
+  max_seconds: 55
+  auto_hook: true
+  captions: true
+  max_trailer_share: 0.25    # a Short may be at most this much trailer footage
+
+# ---- Phase 5: packaging ----
+package:
+  title_options: 5
+  ai_voice_note: "Narration: my own voice, recreated with AI voice cloning."   # set "" to drop the line
+  hashtags: 3
+
+# ---- Phase 6: publishing ----
+publish:
+  shorts_via: uploadpost     # uploadpost (Instagram Reels + YouTube Shorts) | youtube
+  min_lead_minutes: 20
+  review_port: 8765
+  youtube:
+    category_id: "24"
+    privacy: private         # uploads are private until scheduled or published
+    synthetic_media_flag: true   # sets containsSyntheticMedia; set false if the API rejects it
+  uploadpost:
+    user: ""                 # your Upload-Post profile name (put it in config/studio.local.yaml)
+    platforms: [instagram, youtube]

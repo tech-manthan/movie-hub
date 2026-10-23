@@ -1,0 +1,52 @@
+# Cine Kahani settings. Secrets (API keys) live in .env, never here.
+channel:
+  name: Cine Kahani
+  studio_credit: ""          # optional extra credit line, e.g. a studio or editor name
+
+paths:
+  projects: projects
+  music: music
+  services: services
+  logs: logs
+
+languages: [hi, en]          # narration languages
+hindi_script: devanagari     # devanagari | hinglish (Latin letters)
+
+tmdb:
+  # TMDB metadata language per narration language
+  locale: {hi: hi-IN, en: en-US}
+  max_age_days: 30           # refresh cached metadata older than this
+
+llm:
+  # Scripts are written by the Claude Code CLI (`claude -p`), prompt sent on stdin.
+  command: [claude, -p]
+  model: null                # e.g. sonnet; null = CLI default
+  timeout_s: 900
+  retries: 2                 # extra attempts after a failure
+  retry_delay_s: 5
+
+script:
+  require_approval: true     # later phases refuse an unapproved script
+  words_per_minute: {en: 150, hi: 140}
+  target_minutes:            # default length per format
+    review: 8
+    ending_explained: 8
+    things_you_missed: 7
+    cast_facts: 6
+    should_you_watch: 5
+    comparison: 8
+  length_tolerance: [0.6, 1.4]   # accepted share of the target word count
+
+# Used from Phase 3 on. Kept here so limits are config, not code.
+guardrails:
+  trailer:
+    enabled: true
+    max_snippet_seconds: 3
+    max_share_of_runtime: 0.20
+    max_continuous_seconds: 3   # never a long unbroken section
+    min_narration_share: 0.80
+  vary_formats: true
+
+cooldown:
+  between_chunks_s: 20       # pause between heavy chunks (fanless MacBook Air)
+  check_thermal: true

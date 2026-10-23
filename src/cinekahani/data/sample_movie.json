@@ -1,0 +1,130 @@
+{
+  "_note": "SAMPLE data shaped like a TMDB /movie/{id} response. Ratings and the trailer key are placeholders.",
+  "id": 27205,
+  "title": "Inception",
+  "original_title": "Inception",
+  "original_language": "en",
+  "release_date": "2010-07-15",
+  "runtime": 148,
+  "tagline": "Your mind is the scene of the crime.",
+  "overview": "A skilled thief who steals secrets from people's dreams is offered a chance to erase his criminal record, if he can plant an idea in a target's mind instead of taking one.",
+  "genres": [
+    {
+      "id": 28,
+      "name": "Action"
+    },
+    {
+      "id": 878,
+      "name": "Science Fiction"
+    },
+    {
+      "id": 12,
+      "name": "Adventure"
+    }
+  ],
+  "vote_average": 8.4,
+  "vote_count": 36000,
+  "production_companies": [
+    {
+      "name": "Legendary Pictures"
+    },
+    {
+      "name": "Syncopy"
+    },
+    {
+      "name": "Warner Bros. Pictures"
+    }
+  ],
+  "credits": {
+    "cast": [
+      {
+        "name": "Leonardo DiCaprio",
+        "character": "Cobb"
+      },
+      {
+        "name": "Joseph Gordon-Levitt",
+        "character": "Arthur"
+      },
+      {
+        "name": "Elliot Page",
+        "character": "Ariadne"
+      },
+      {
+        "name": "Tom Hardy",
+        "character": "Eames"
+      },
+      {
+        "name": "Ken Watanabe",
+        "character": "Saito"
+      },
+      {
+        "name": "Cillian Murphy",
+        "character": "Robert Fischer"
+      },
+      {
+        "name": "Marion Cotillard",
+        "character": "Mal"
+      },
+      {
+        "name": "Michael Caine",
+        "character": "Miles"
+      }
+    ],
+    "crew": [
+      {
+        "name": "Christopher Nolan",
+        "job": "Director"
+      },
+      {
+        "name": "Christopher Nolan",
+        "job": "Screenplay"
+      },
+      {
+        "name": "Hans Zimmer",
+        "job": "Original Music Composer"
+      }
+    ]
+  },
+  "videos": {
+    "results": [
+      {
+        "site": "YouTube",
+        "type": "Trailer",
+        "official": true,
+        "key": "SAMPLE_KEY_1",
+        "published_at": "2010-05-01T00:00:00.000Z"
+      },
+      {
+        "site": "YouTube",
+        "type": "Teaser",
+        "official": true,
+        "key": "SAMPLE_KEY_2",
+        "published_at": "2010-02-01T00:00:00.000Z"
+      }
+    ]
+  },
+  "images": {
+    "posters": [
+      {
+        "file_path": "/sample_poster.jpg",
+        "width": 2000,
+        "height": 3000,
+        "vote_average": 5.5
+      }
+    ],
+    "backdrops": [
+      {
+        "file_path": "/sample_backdrop1.jpg",
+        "width": 3840,
+        "height": 2160,
+        "vote_average": 5.3
+      },
+      {
+        "file_path": "/sample_backdrop2.jpg",
+        "width": 3840,
+        "height": 2160,
+        "vote_average": 5.1
+      }
+    ]
+  }
+}

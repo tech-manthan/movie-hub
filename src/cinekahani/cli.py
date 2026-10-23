@@ -24,6 +24,7 @@ from .core.variety import Variety
 from .visuals import trailer as trailer_mod
 from .visuals.plan import GuardrailError
 from .visuals.styles import STYLES
+from .package.pack import PackageError, build_package, render_for
 from .shorts import service as shorts_service
 from .shorts.client import OpenShortsClient, ShortsError
 from .shorts.make import make_shorts
@@ -282,6 +283,42 @@ def shorts_make(ctx: typer.Context, slug: str, format: str = typer.Option("revie
                 typer.secho(f"  rejected clip {rej['index']}: {rej['rejected']}", fg=typer.colors.YELLOW)
     except (FileNotFoundError, ShortsError) as exc:
         _fail(str(exc))
+
+
+@app.command()
+def package(ctx: typer.Context, slug: str, format: str = typer.Option("review", "--format", "-f"),
+            lang: str = typer.Option("both", "--lang", "-l", help="en, hi or both"),
+            force: bool = typer.Option(False)):
+    """Phase 5: title options, description, tags, chapters, Shorts copy and thumbnail (edit package.json freely)."""
+    s = _settings(ctx)
+    try:
+        project = Project.open(s.path("projects"), slug)
+        meta_ = load_meta(project)
+        llm = ClaudeCli(s.llm)
+        for lg in (["en", "hi"] if lang == "both" else [lang]):
+            r = build_package(s, project, meta_, format, lg, llm, force=force)
+            typer.echo(f"{r.path} [{r.decision.value}]")
+            typer.echo(f"  title: {r.data['title']}")
+            typer.echo(f"  thumbnail: {r.thumbnail}")
+    except (FileNotFoundError, KeyError, ScriptNotReady, PackageError, RenderError, LlmError) as exc:
+        _fail(str(exc.args[0] if isinstance(exc, KeyError) else exc))
+
+
+@app.command()
+def thumbnail(ctx: typer.Context, slug: str, format: str = typer.Option("review", "--format", "-f"),
+              lang: str = typer.Option(..., "--lang", "-l")):
+    """Re-draw the thumbnail after you edited thumbnail_text in package.json."""
+    import json as _json
+    s = _settings(ctx)
+    try:
+        project = Project.open(s.path("projects"), slug)
+        pkg = project.root / "package" / f"{format}.{lang}" / "package.json"
+        if not pkg.is_file():
+            _fail("Run `cinekahani package` first.")
+        out = render_for(s, project, load_meta(project), _json.loads(pkg.read_text(encoding="utf-8")), format, lang)
+    except (FileNotFoundError, RenderError) as exc:
+        _fail(str(exc))
+    typer.echo(out)
 
 
 @app.command()

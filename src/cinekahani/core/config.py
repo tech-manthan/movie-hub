@@ -13,6 +13,7 @@ ENV_PREFIXES = ("TMDB_", "CINEKAHANI_", "GEMINI_", "OMNIVOICE_", "YOUTUBE_", "UP
 
 class Channel(BaseModel):
     name: str = "Cine Kahani"
+    name_hindi: str = "सिने कहानी"   # added as a tag so Hindi searches find the channel
     studio_credit: str = ""
 
 

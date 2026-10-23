@@ -7,10 +7,11 @@ from cinekahani.meta.fetch import fetch_meta
 EN_SECTIONS = ["Hook", "What it is", "What works", "What does not", "Craft", "Verdict"]
 
 
-def make_script(words_per_section=60, extra="", sections=EN_SECTIONS):
+def make_script(words_per_section=60, extra="", sections=EN_SECTIONS, unique=False):
     out = []
-    for name in sections:
-        out.append(f"## {name}\n[VISUAL: backdrop]\n" + " ".join(["word"] * words_per_section))
+    for i, name in enumerate(sections):
+        w = f"word{i}" if unique else "word"
+        out.append(f"## {name}\n[VISUAL: backdrop]\n" + " ".join([w] * words_per_section))
     return "\n\n".join(out) + extra
 
 

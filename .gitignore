@@ -7,3 +7,5 @@ projects/
 music/
 services/
 logs/
+config/studio.local.yaml
+token*.json

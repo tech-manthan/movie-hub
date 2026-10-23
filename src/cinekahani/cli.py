@@ -7,7 +7,7 @@ from typing import Optional
 import typer
 
 from .core.cache import Decision
-from .core.config import Settings, load_settings
+from .core.config import Settings, load_settings, save_local
 from .core.logs import setup_logging
 from .core.project import Project
 from .meta.fetch import fetch_meta, load_meta
@@ -17,6 +17,8 @@ from .script.formats import FORMATS
 from .script.generate import (ScriptEditedError, ScriptNotReady, approve_script, generate_script,
                               script_path)
 from .script.llm import ClaudeCli, LlmError
+from .voice.client import VoiceError, VoiceStudioClient
+from .voice.narrate import narrate as run_narrate
 
 app = typer.Typer(help="Cine Kahani: movie and series video pipeline (Phase 1: metadata + scripts).",
                   no_args_is_help=True, add_completion=False)
@@ -98,6 +100,60 @@ def approve(ctx: typer.Context, slug: str, format: str = typer.Option("review", 
     except (FileNotFoundError, ScriptNotReady) as exc:
         _fail(str(exc))
     typer.echo(f"approved: {p}")
+
+
+voice_app = typer.Typer(help="VoiceStudio: set up and check your cloned voice.", no_args_is_help=True)
+app.add_typer(voice_app, name="voice")
+
+
+@voice_app.command("check")
+def voice_check(ctx: typer.Context):
+    """Is VoiceStudio running, and which voices and engine will be used?"""
+    s = _settings(ctx)
+    try:
+        c = VoiceStudioClient(s.voice, s.env)
+        profiles = c.profiles()
+    except VoiceError as exc:
+        _fail(str(exc))
+    typer.echo(f"VoiceStudio reachable at {s.voice.base_url}; engine setting: {s.voice.engine}")
+    typer.echo(f"saved voices: {', '.join(p.get('name', '?') + ' (' + str(p.get('id')) + ')' for p in profiles) or 'none'}")
+    typer.echo(f"profiles in config: {s.voice.profile or 'none yet - run `cinekahani voice setup`'}")
+    if s.voice.engine in ("omnivoice", "", None):
+        typer.secho("warning: OmniVoice weights are non-commercial; do not use them on a monetized channel.",
+                    fg=typer.colors.YELLOW)
+
+
+@voice_app.command("setup")
+def voice_setup(ctx: typer.Context, wav: Path = typer.Option(..., exists=True, help="10-15 s clean recording of your voice"),
+                text: str = typer.Option("", help="Exactly what you said in the recording (improves cloning)"),
+                name: str = typer.Option("cinekahani", help="Name for the saved voice"),
+                langs: str = typer.Option("en,hi", help="Languages that should use this voice")):
+    """Clone your voice once and remember the profile id in config/studio.local.yaml."""
+    s = _settings(ctx)
+    try:
+        pid = VoiceStudioClient(s.voice, s.env).create_clone(name, wav, text)
+    except VoiceError as exc:
+        _fail(str(exc))
+    patch = {"voice": {"profile": {lg.strip(): pid for lg in langs.split(",") if lg.strip()}}}
+    path = save_local(s.root, patch)
+    typer.echo(f"voice '{name}' saved as {pid}; recorded in {path}")
+
+
+@app.command()
+def narrate(ctx: typer.Context, slug: str, format: str = typer.Option("review", "--format", "-f"),
+            lang: str = typer.Option("both", "--lang", "-l", help="en, hi or both"),
+            force: bool = typer.Option(False, help="Speak everything again")):
+    """Phase 2: speak an approved script in your cloned voice (chunked, cached)."""
+    s = _settings(ctx)
+    try:
+        project = Project.open(s.path("projects"), slug)
+        client = VoiceStudioClient(s.voice, s.env)
+        for lg in (["en", "hi"] if lang == "both" else [lang]):
+            r = run_narrate(s, project, format, lg, client, force=force)
+            typer.echo(f"{r.wav} [{r.decision.value}] {r.duration:.0f}s "
+                       f"({r.generated} spoken, {r.cached} reused)")
+    except (FileNotFoundError, ScriptNotReady, VoiceError) as exc:
+        _fail(str(exc))
 
 
 @app.command()

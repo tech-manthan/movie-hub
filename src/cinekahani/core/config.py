@@ -149,6 +149,8 @@ class UploadPostCfg(BaseModel):
 
 
 class PublishCfg(BaseModel):
+    shorts_via: str = "uploadpost"   # uploadpost (Instagram Reels + YouTube Shorts) | youtube (YouTube only)
+    min_lead_minutes: int = 20       # scheduled times must be at least this far ahead
     youtube: YoutubeCfg = YoutubeCfg()
     uploadpost: UploadPostCfg = UploadPostCfg()
     review_port: int = 8765

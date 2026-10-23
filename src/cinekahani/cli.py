@@ -24,6 +24,11 @@ from .core.variety import Variety
 from .visuals import trailer as trailer_mod
 from .visuals.plan import GuardrailError
 from .visuals.styles import STYLES
+from .publish import run as publish_run
+from .publish.state import PublishState, ScheduleError, parse_when
+from .publish.uploadpost import UploadPostClient, UploadPostError
+from .publish.youtube import YoutubeAuth, YoutubeError, YoutubeUploader
+from .review import queue as review_queue
 from .package.pack import PackageError, build_package, render_for
 from .shorts import service as shorts_service
 from .shorts.client import OpenShortsClient, ShortsError
@@ -321,24 +326,223 @@ def thumbnail(ctx: typer.Context, slug: str, format: str = typer.Option("review"
     typer.echo(out)
 
 
+def _projects(s: Settings, slug: Optional[str]) -> list[Project]:
+    root = s.path("projects")
+    if slug:
+        return [Project.open(root, slug)]
+    return [Project(p) for p in sorted(root.iterdir()) if p.is_dir() and not p.name.startswith(".")] if root.is_dir() else []
+
+
+review_app = typer.Typer(help="Phase 6: approve every output before it can be published.", no_args_is_help=True)
+app.add_typer(review_app, name="review")
+
+
+@review_app.command("list")
+def review_list(ctx: typer.Context, slug: Optional[str] = typer.Argument(None)):
+    """Everything waiting for your decision."""
+    s = _settings(ctx)
+    try:
+        projects = _projects(s, slug)
+    except FileNotFoundError as exc:
+        _fail(str(exc))
+    shown = 0
+    for p in projects:
+        for it in review_queue.discover(s, p):
+            shown += 1
+            fix = f"  [{len(it.blocked)} to fix]" if it.blocked else ""
+            typer.echo(f"{it.status:9} {p.slug} {it.id}  {it.title}{fix}")
+    if not shown:
+        typer.echo("Nothing packaged yet. Run `cinekahani package` first.")
+
+
+@review_app.command("show")
+def review_show(ctx: typer.Context, slug: str, item: str):
+    """Title, description, tags and checks for one item."""
+    s = _settings(ctx)
+    try:
+        it = review_queue.find(s, Project.open(s.path("projects"), slug), item)
+    except (FileNotFoundError, review_queue.ReviewError) as exc:
+        _fail(str(exc))
+    typer.echo(f"{it.title}\nvideo: {it.video}\nstatus: {it.status} {it.note}\n\n{it.description}\n\ntags: {', '.join(it.tags)}\n")
+    for c in it.checks:
+        typer.echo(f"  {'ok  ' if c.ok else ('FAIL' if c.blocking else 'warn')} {c.name} {'' if c.ok else '- ' + c.message}")
+
+
+@review_app.command("approve")
+def review_approve(ctx: typer.Context, slug: str, item: str, note: str = ""):
+    """Approve one item (blocked while a check fails). Editing it afterwards withdraws the approval."""
+    s = _settings(ctx)
+    try:
+        review_queue.decide(s, Project.open(s.path("projects"), slug), item, "approved", note)
+    except (FileNotFoundError, review_queue.ReviewError) as exc:
+        _fail(str(exc))
+    typer.echo(f"approved {item}")
+
+
+@review_app.command("reject")
+def review_reject(ctx: typer.Context, slug: str, item: str, note: str = ""):
+    s = _settings(ctx)
+    try:
+        review_queue.decide(s, Project.open(s.path("projects"), slug), item, "rejected", note)
+    except (FileNotFoundError, review_queue.ReviewError) as exc:
+        _fail(str(exc))
+    typer.echo(f"rejected {item}")
+
+
+@review_app.command("serve")
+def review_serve(ctx: typer.Context, port: Optional[int] = typer.Option(None, help="default: publish.review_port")):
+    """Open the review dashboard (local only): watch videos, edit text, approve, schedule."""
+    import uvicorn
+    from .review.web import create_app
+    s = _settings(ctx)
+    p = port or s.publish.review_port
+    typer.echo(f"Review dashboard: http://127.0.0.1:{p}  (Ctrl+C to stop)")
+    uvicorn.run(create_app(s), host="127.0.0.1", port=p, log_level="warning")
+
+
+youtube_app = typer.Typer(help="YouTube sign-in.", no_args_is_help=True)
+app.add_typer(youtube_app, name="youtube")
+
+
+def _yt_auth(s: Settings) -> YoutubeAuth:
+    return YoutubeAuth(s.env, s.root / "token.youtube.json")
+
+
+@youtube_app.command("auth")
+def youtube_auth(ctx: typer.Context):
+    """Sign in to YouTube once (opens your browser)."""
+    s = _settings(ctx)
+    try:
+        _yt_auth(s).authorize()
+    except YoutubeError as exc:
+        _fail(str(exc))
+    typer.echo("YouTube connected. Note: a Google Cloud project that has not passed Google's audit can only "
+               "upload videos as private; schedule or publish them from YouTube Studio if that applies to you.")
+
+
+publish_app = typer.Typer(help="Phase 6: schedule and upload APPROVED items.", no_args_is_help=True)
+app.add_typer(publish_app, name="publish")
+
+
+def _providers(s: Settings, need: set[str]) -> publish_run.Providers:
+    p = publish_run.Providers()
+    try:
+        if "youtube" in need:
+            p.youtube = YoutubeUploader(_yt_auth(s), s.publish.youtube)
+        if "uploadpost" in need:
+            p.uploadpost = UploadPostClient(s.env, s.publish.uploadpost)
+    except (YoutubeError, UploadPostError) as exc:
+        _fail(str(exc))
+    return p
+
+
+@publish_app.command("schedule")
+def publish_schedule(ctx: typer.Context, slug: str, item: str,
+                     at: str = typer.Option(..., help="e.g. '2026-11-03 18:00'"),
+                     tz: str = typer.Option("Asia/Kolkata", help="timezone of --at")):
+    """Choose when an item goes live. The platform holds the upload until then."""
+    s = _settings(ctx)
+    try:
+        project = Project.open(s.path("projects"), slug)
+        it = review_queue.find(s, project, item)
+        when = parse_when(at, tz, min_lead_minutes=s.publish.min_lead_minutes)
+        PublishState(project).schedule(it.id, when, tz, publish_run.targets_for(s, it))
+    except (FileNotFoundError, review_queue.ReviewError, ScheduleError) as exc:
+        _fail(str(exc))
+    typer.echo(f"{item} scheduled for {when.isoformat(timespec='minutes')} UTC. Upload it with `cinekahani publish run` "
+               "after approving it.")
+
+
+@publish_app.command("run")
+def publish_run_cmd(ctx: typer.Context, slug: Optional[str] = typer.Argument(None),
+                    dry_run: bool = typer.Option(False, help="Show what would be uploaded")):
+    """Upload every approved, scheduled item that is not up yet (safe to run repeatedly, e.g. from cron)."""
+    s = _settings(ctx)
+    try:
+        projects = _projects(s, slug)
+        need: set[str] = set()
+        for p in projects:
+            for it in publish_run.due_items(s, p):
+                need |= set(publish_run.targets_for(s, it))
+        outcomes = publish_run.run_due(s, projects, _providers(s, need), dry_run=dry_run)
+    except FileNotFoundError as exc:
+        _fail(str(exc))
+    if not outcomes:
+        typer.echo("Nothing due: approve items and schedule them first.")
+    bad = 0
+    for o in outcomes:
+        bad += o.status == "failed"
+        typer.echo(f"{o.status:9} {o.item} -> {o.target} {o.detail}")
+    raise typer.Exit(1 if bad else 0)
+
+
+@publish_app.command("now")
+def publish_now(ctx: typer.Context, slug: str, item: str,
+                yes: bool = typer.Option(False, "--yes", help="Confirm: upload this approved item right now"),
+                public: bool = typer.Option(False, help="Make it public immediately (default: private)")):
+    """Upload one approved item immediately, without a schedule."""
+    s = _settings(ctx)
+    if not yes:
+        _fail("Re-run with --yes to confirm you want to upload this item now.")
+    try:
+        project = Project.open(s.path("projects"), slug)
+        it = review_queue.find(s, project, item)
+        outcomes = publish_run.publish_item(s, project, item, _providers(s, set(publish_run.targets_for(s, it))),
+                                            now=True, public=public)
+    except (FileNotFoundError, review_queue.ReviewError, publish_run.PublishError) as exc:
+        _fail(str(exc))
+    bad = 0
+    for o in outcomes:
+        bad += o.status == "failed"
+        typer.echo(f"{o.status:9} {o.item} -> {o.target} {o.detail}")
+    raise typer.Exit(1 if bad else 0)
+
+
+STAGES = ("script", "approved", "narration", "video", "shorts", "package", "reviewed", "published")
+
+
+def stage_report(s: Settings, proj: Project) -> list[tuple[str, str, dict[str, bool]]]:
+    """(format, lang, {stage: done}) for every script in the project."""
+    from .assemble.build import render_paths
+    from .voice.narrate import audio_paths
+    out = []
+    sdir = proj.root / "script"
+    items = {i.id: i for i in review_queue.discover(s, proj)}
+    state = PublishState(proj)
+    for f in sorted(sdir.glob("*.md")) if sdir.is_dir() else []:
+        fmt, lang = f.stem.rsplit(".", 1)
+        front, _ = parse.read_script(f)
+        long_id = f"long:{fmt}.{lang}"
+        out.append((fmt, lang, {
+            "script": True, "approved": front.get("status") == "approved",
+            "narration": audio_paths(proj, fmt, lang)[0].is_file(),
+            "video": render_paths(proj, fmt, lang)[0].is_file(),
+            "shorts": (proj.root / "clips" / f"{fmt}.{lang}" / "clips.json").is_file(),
+            "package": long_id in items,
+            "reviewed": long_id in items and items[long_id].status == "approved",
+            "published": state.done(long_id, "youtube")}))
+    return out
+
+
 @app.command()
 def status(ctx: typer.Context, slug: Optional[str] = typer.Argument(None)):
-    """List projects and the state of their scripts."""
+    """Where every video stands: script > narration > video > shorts > package > review > publish."""
     s = _settings(ctx)
-    root = s.path("projects")
-    slugs = [slug] if slug else sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
-    if not slugs:
+    try:
+        projects = _projects(s, slug)
+    except FileNotFoundError as exc:
+        _fail(str(exc))
+    if not projects:
         typer.echo("No projects yet. Try: cinekahani meta \"Inception\" --sample")
-    for sl in slugs:
-        try:
-            proj = Project.open(root, sl)
-        except FileNotFoundError as exc:
-            _fail(str(exc))
-        typer.echo(sl)
-        for f in sorted((proj.root / "script").glob("*.md")) if (proj.root / "script").is_dir() else []:
-            front, body = parse.read_script(f)
-            typer.echo(f"  {f.name}: {front.get('status', '?')}, {front.get('words', '?')} words, "
-                       f"{len(parse.verify_tags(body))} unchecked claims")
+    for proj in projects:
+        typer.echo(proj.slug)
+        rows = stage_report(s, proj)
+        if not rows:
+            typer.echo("  (no scripts yet: cinekahani script " + proj.slug + ")")
+        for fmt, lang, done in rows:
+            nxt = next((st for st in STAGES if not done[st]), "done")
+            typer.echo(f"  {fmt}.{lang}: " + " ".join(f"{'[x]' if done[st] else '[ ]'}{st}" for st in STAGES)
+                       + f"   next: {nxt}")
 
 
 @app.command()
@@ -350,22 +554,52 @@ def formats():
 
 @app.command()
 def doctor(ctx: typer.Context):
-    """Check what this Mac has ready."""
+    """Check what this Mac has ready for each phase."""
+    import subprocess
+    from .visuals.fonts import find_font
     s = _settings(ctx)
     ok = True
 
     def line(name: str, good: bool, hint: str = "", needed: bool = True):
         nonlocal ok
-        mark = "ok " if good else ("MISSING" if needed else "later")
+        mark = "ok     " if good else ("MISSING" if needed else "later  ")
         typer.echo(f"[{mark}] {name}{'' if good else '  -> ' + hint}")
         ok = ok and (good or not needed)
 
-    line("claude CLI", shutil.which(s.llm.command[0]) is not None,
+    def ffmpeg_has(word: str) -> bool:
+        try:
+            return word in subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+        except OSError:
+            return False
+
+    line("claude CLI (scripts, packaging)", shutil.which(s.llm.command[0]) is not None,
          "install Claude Code and log in by running `claude` once")
+    line("ffmpeg + ffprobe (video)", bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), "brew install ffmpeg")
+    line("ffmpeg subtitles filter (burned-in subtitles)", ffmpeg_has(" subtitles "),
+         "use a full ffmpeg build: brew install ffmpeg (needs libass)")
+    line("latin font for cards and thumbnails", find_font("latin") is not None, "install Arial or DejaVu Sans")
+    line("Devanagari font (Hindi subtitles use the system font)", find_font("devanagari") is not None,
+         "macOS has Kohinoor Devanagari built in", needed=False)
     line("TMDB key in .env", bool(s.env.get("TMDB_API_KEY") or s.env.get("TMDB_READ_TOKEN")),
          "add TMDB_API_KEY to .env (use --sample until then)", needed=False)
-    line("ffmpeg", shutil.which("ffmpeg") is not None, "brew install ffmpeg (Phase 3)", needed=False)
-    line("docker", shutil.which("docker") is not None, "install Docker Desktop (Phase 4)", needed=False)
+    try:
+        VoiceStudioClient(s.voice, s.env).profiles()
+        vs = True
+    except VoiceError:
+        vs = False
+    line(f"VoiceStudio running at {s.voice.base_url}", vs, "open the VoiceStudio app", needed=False)
+    line("voice profile saved", bool(s.voice.profile), "cinekahani voice setup --wav ref.wav", needed=False)
+    line("music tracks with licenses", bool(music_lib.eligible(s.path("music"), s.video.music)),
+         "cinekahani music add FILE --license cc0 --source URL", needed=False)
+    line("yt-dlp (optional trailer snippets)", shutil.which("yt-dlp") is not None, "brew install yt-dlp", needed=False)
+    line("docker (OpenShorts)", shutil.which("docker") is not None, "install Docker Desktop", needed=False)
+    line("OpenShorts set up", (s.root / s.shorts.compose_dir / "docker-compose.yml").is_file(),
+         "bash scripts/setup_openshorts.sh", needed=False)
+    line("GEMINI_API_KEY (OpenShorts)", bool(s.env.get("GEMINI_API_KEY")), "add to .env", needed=False)
+    line("YouTube client id/secret", bool(s.env.get("YOUTUBE_CLIENT_ID") and s.env.get("YOUTUBE_CLIENT_SECRET")),
+         "see README, Phase 6", needed=False)
+    line("YouTube signed in", (s.root / "token.youtube.json").is_file(), "cinekahani youtube auth", needed=False)
+    line("UPLOADPOST_API_KEY (Instagram Reels)", bool(s.env.get("UPLOADPOST_API_KEY")), "add to .env", needed=False)
     raise typer.Exit(0 if ok else 1)
 
 

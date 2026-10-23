@@ -207,7 +207,9 @@ def test_end_to_end_cli_with_real_subprocess(tmp_path):
     assert "up to date" in r.invoke(app, base + ["script", "inception-2010", "-l", "en"]).output
     assert r.invoke(app, base + ["approve", "inception-2010", "-l", "en"]).exit_code == 0
     st = r.invoke(app, base + ["status"]).output
-    assert "review.en.md: approved" in st and "review.hi.md: draft" in st
+    en = next(l for l in st.splitlines() if "review.en:" in l)
+    hi = next(l for l in st.splitlines() if "review.hi:" in l)
+    assert "[x]approved" in en and "[ ]approved" in hi and "next: narration" in en and "next: approved" in hi
     bad = r.invoke(app, base + ["script", "nope-1999"])
     assert bad.exit_code == 1 and "No project" in bad.output
     assert r.invoke(app, base + ["formats"]).exit_code == 0

@@ -265,5 +265,34 @@ def test_ffmpeg_failure_is_reported(small, narrated):
     class Bad:
         returncode, stdout, stderr = 1, "", "boom: bad filter"
 
+    import subprocess
+
+    def runner(cmd, **kw):
+        return subprocess.run(cmd, **kw) if "-h" in cmd else Bad()      # real filter check, failing render
+
     with pytest.raises(RenderError, match="bad filter"):
-        build_video(small, project, meta, "review", "en", style_key="clean", runner=lambda *a, **k: Bad())
+        build_video(small, project, meta, "review", "en", style_key="clean", runner=runner)
+
+
+def test_missing_subtitles_filter_gives_a_clear_error(small, narrated):
+    from cinekahani.assemble.render import SUBTITLES_HELP, has_filter
+
+    class P:
+        def __init__(self, out, err=""):
+            self.stdout, self.stderr, self.returncode = out, err, 0
+
+    assert has_filter("subtitles", runner=lambda *a, **k: P("Filter subtitles\n  Render text subtitles"))
+    assert not has_filter("subtitles", runner=lambda *a, **k: P("", "Unknown filter 'subtitles'."))
+    assert not has_filter("subtitles", runner=lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    assert has_filter("subtitles")                                  # this machine's ffmpeg has it
+    project, meta = narrated
+    import subprocess
+
+    def runner(cmd, **kw):
+        if "-h" in cmd:
+            return P("", "Unknown filter 'subtitles'.")
+        return subprocess.run(cmd, **kw)
+
+    with pytest.raises(RenderError, match="libass"):
+        build_video(small, project, meta, "review", "en", style_key="clean", runner=runner)
+    assert "libass" in SUBTITLES_HELP

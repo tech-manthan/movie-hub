@@ -592,17 +592,12 @@ def doctor(ctx: typer.Context):
         typer.echo(f"[{mark}] {name}{'' if good else '  -> ' + hint}")
         ok = ok and (good or not needed)
 
-    def ffmpeg_has(word: str) -> bool:
-        try:
-            return word in subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
-        except OSError:
-            return False
-
     line("claude CLI (scripts, packaging)", shutil.which(s.llm.command[0]) is not None,
          "install Claude Code and log in by running `claude` once")
     line("ffmpeg + ffprobe (video)", bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), "brew install ffmpeg")
-    line("ffmpeg subtitles filter (burned-in subtitles)", ffmpeg_has(" subtitles "),
-         "use a full ffmpeg build: brew install ffmpeg (needs libass)")
+    from .assemble.render import SUBTITLES_HELP, has_filter
+    where = shutil.which("ffmpeg") or "not found"
+    line(f"ffmpeg subtitles filter (burned-in subtitles) [{where}]", has_filter("subtitles"), SUBTITLES_HELP)
     line("latin font for cards and thumbnails", find_font("latin") is not None, "install Arial or DejaVu Sans")
     line("Devanagari font (Hindi subtitles use the system font)", find_font("devanagari") is not None,
          "macOS has Kohinoor Devanagari built in", needed=False)

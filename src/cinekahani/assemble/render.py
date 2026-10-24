@@ -35,6 +35,21 @@ def run_ffmpeg(args: list[str], *, runner=subprocess.run, cwd: Path | None = Non
         raise RenderError(f"ffmpeg failed: {(p.stderr or '').strip()[-600:]}")
 
 
+def has_filter(name: str, *, runner=subprocess.run) -> bool:
+    """Ask ffmpeg directly whether it was built with a filter (e.g. 'subtitles' needs libass)."""
+    try:
+        p = runner(["ffmpeg", "-hide_banner", "-h", f"filter={name}"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    text = (p.stdout or "") + (p.stderr or "")
+    return f"Filter {name}" in text and "Unknown filter" not in text
+
+
+SUBTITLES_HELP = ("This ffmpeg has no 'subtitles' filter (it was built without libass), so it cannot burn in subtitles. "
+                  "Run `which -a ffmpeg` to see which one is used, then `brew reinstall ffmpeg`. "
+                  "As a stopgap, set video.subtitles.enabled: false in config/studio.local.yaml.")
+
+
 def encoder_args(settings: Settings, *, runner=subprocess.run, platform: str = sys.platform) -> list[str]:
     v = settings.video
     want = v.encoder
@@ -103,6 +118,8 @@ def render_plan(settings: Settings, project: Project, plan: Plan, style: Style, 
                 runner=subprocess.run, sleep: Callable[[float], None] = time.sleep, probe=cpu_speed_limit) -> Path:
     v = settings.video
     enforce_guardrails(plan, settings)
+    if ass is not None and not has_filter("subtitles", runner=runner):
+        raise RenderError(SUBTITLES_HELP)
     shots_dir = project.dir("visuals") / "shots"
     shots_dir.mkdir(exist_ok=True)
     backdrop = Path(art["backdrops"][0]) if art.get("backdrops") else None

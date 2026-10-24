@@ -87,7 +87,7 @@ throttle state) follows each chunk that was really generated.
 
 ### 3. Video
 Artwork from TMDB with Ken Burns motion and poster cards, an intro and outro card, burned-in subtitles
-(script text with chunk-exact timing), and music that ducks under your voice, normalized to -16 LUFS.
+(script text with chunk-exact timing; if your ffmpeg has no libass, as with some Homebrew builds, Cine Kahani draws them itself), and music that ducks under your voice, normalized to -16 LUFS.
 - **Variety:** four visual styles (noir, pop, clean, warm) rotate so consecutive videos differ; `cinekahani suggest`
   proposes the least recently used format.
 - **Trailer snippets** are optional and off until you run `cinekahani trailer fetch SLUG --yes`

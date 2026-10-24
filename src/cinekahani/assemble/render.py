@@ -114,7 +114,7 @@ def _card_lines(key: str, plan: Plan, settings: Settings) -> list[tuple[str, int
 
 
 def render_plan(settings: Settings, project: Project, plan: Plan, style: Style, art: dict, audio: Path,
-                out: Path, *, ass: Path | None = None, music: Path | None = None,
+                out: Path, *, ass: Path | None = None, overlay: Path | None = None, music: Path | None = None,
                 runner=subprocess.run, sleep: Callable[[float], None] = time.sleep, probe=cpu_speed_limit) -> Path:
     v = settings.video
     enforce_guardrails(plan, settings)
@@ -177,7 +177,12 @@ def render_plan(settings: Settings, project: Project, plan: Plan, style: Style, 
     else:
         graph += "[n]loudnorm=I=-16:TP=-1.5:LRA=11[a]"
     vargs = ["-map", "0:v"]
-    if ass is not None:
+    if overlay is not None:
+        k = 3 if music else 2
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(Path(overlay).resolve())]
+        graph += f";[{k}:v]fps={v.fps},format=rgba[sub];[0:v][sub]overlay=format=auto,format=yuv420p[v]"
+        vargs = ["-map", "[v]", *enc]
+    elif ass is not None:
         vargs += ["-vf", f"subtitles={ass.name}", *enc]
     else:
         vargs += ["-c:v", "copy"]

@@ -19,8 +19,8 @@ from ..visuals.plan import Plan, plan_video
 from ..visuals.styles import STYLES, get_style
 from ..voice.narrate import audio_paths, load_timeline
 from . import music as music_lib
-from .render import RenderError, probe_video, render_plan
-from .subtitles import write_ass
+from .render import RenderError, has_filter, probe_video, render_plan
+from .subtitles import write_ass, write_overlay
 
 log = get_logger("build")
 
@@ -74,12 +74,20 @@ def build_video(settings: Settings, project: Project, meta: TitleMeta, fmt: str,
     plan.music_credit = music_lib.credit_line(track)
     plan.save(plan_path)
 
-    ass = None
+    ass = overlay = None
     if settings.video.subtitles.enabled:
-        ass = write_ass(out.parent / f"subs.{fmt}.{lang}.ass", timeline, settings, style, lang, plan.intro_s)
+        if has_filter("subtitles", runner=runner):
+            ass = write_ass(out.parent / f"subs.{fmt}.{lang}.ass", timeline, settings, style, lang, plan.intro_s)
+        else:
+            log.warning("this ffmpeg has no libass, so subtitles are drawn by Cine Kahani instead (works, a bit slower)")
+            try:
+                overlay = write_overlay(timeline, settings, style, lang, plan.intro_s, plan.total_s,
+                                        project.dir("renders") / f"subs.{fmt}.{lang}")
+            except RuntimeError as exc:
+                raise RenderError(str(exc)) from exc
 
     input_hash = hash_json({"plan": json.loads(plan_path.read_text(encoding="utf-8")), "audio": hash_file(wav),
-                            "ass": hash_file(ass) if ass else None,
+                            "ass": hash_file(ass) if ass else None, "overlay": hash_file(overlay) if overlay else None,
                             "music": hash_file(music_path) if music_path else None,
                             "size": [settings.video.width, settings.video.height, settings.video.fps], "v": 1})
     key = f"video:{fmt}:{lang}"
@@ -90,7 +98,7 @@ def build_video(settings: Settings, project: Project, meta: TitleMeta, fmt: str,
         return BuildResult(out, plan, json.loads(report_path.read_text(encoding="utf-8")), decision)
 
     kw = {"probe": probe} if probe else {}
-    render_plan(settings, project, plan, style, art, wav, out, ass=ass, music=music_path,
+    render_plan(settings, project, plan, style, art, wav, out, ass=ass, overlay=overlay, music=music_path,
                 runner=runner, sleep=sleep, **kw)
     info = probe_video(out, runner=runner)
     problems = []
@@ -106,7 +114,7 @@ def build_video(settings: Settings, project: Project, meta: TitleMeta, fmt: str,
     report = {"style": style.key, "duration": round(info["duration"], 2), "narration_s": plan.narration_s,
               "shots": len(plan.shots), "trailer_snippets": len(plan.snippets()),
               "trailer_share": round(plan.trailer_share(), 4), "music": plan.music, "music_credit": plan.music_credit,
-              "subtitles": bool(ass), "artwork": {k: len(v) for k, v in art.items()}, "checks": "passed"}
+              "subtitles": bool(ass or overlay), "subtitle_mode": "libass" if ass else ("overlay" if overlay else "off"), "artwork": {k: len(v) for k, v in art.items()}, "checks": "passed"}
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     manifest.record(key, input_hash, hash_file(out), [out.name, plan_path.name])
     variety.record(slug=project.slug, format=fmt, lang=lang, style=style.key, music=plan.music)

@@ -597,7 +597,13 @@ def doctor(ctx: typer.Context):
     line("ffmpeg + ffprobe (video)", bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), "brew install ffmpeg")
     from .assemble.render import SUBTITLES_HELP, has_filter
     where = shutil.which("ffmpeg") or "not found"
-    line(f"ffmpeg subtitles filter (burned-in subtitles) [{where}]", has_filter("subtitles"), SUBTITLES_HELP)
+    from .assemble.subtitles import overlay_ready
+    libass = has_filter("subtitles")
+    line(f"subtitles: ffmpeg libass [{where}]", libass or overlay_ready("en") is None,
+         "no libass here, so Cine Kahani draws subtitles itself (fine; or install an ffmpeg with libass)", needed=False)
+    if not libass:
+        problem = overlay_ready("hi")
+        line("subtitles: Hindi drawing without libass", problem is None, problem or "", needed=False)
     line("latin font for cards and thumbnails", find_font("latin") is not None, "install Arial or DejaVu Sans")
     line("Devanagari font (Hindi subtitles use the system font)", find_font("devanagari") is not None,
          "macOS has Kohinoor Devanagari built in", needed=False)

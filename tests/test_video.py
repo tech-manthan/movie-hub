@@ -274,8 +274,19 @@ def test_ffmpeg_failure_is_reported(small, narrated):
         build_video(small, project, meta, "review", "en", style_key="clean", runner=runner)
 
 
-def test_missing_subtitles_filter_gives_a_clear_error(small, narrated):
-    from cinekahani.assemble.render import SUBTITLES_HELP, has_filter
+def no_libass(real=None):
+    import subprocess
+
+    class P:
+        returncode, stdout, stderr = 0, "", "Unknown filter 'subtitles'."
+
+    def runner(cmd, **kw):
+        return P() if ("-h" in cmd and "filter=subtitles" in cmd) else subprocess.run(cmd, **kw)
+    return runner
+
+
+def test_has_filter_detection():
+    from cinekahani.assemble.render import has_filter
 
     class P:
         def __init__(self, out, err=""):
@@ -285,14 +296,53 @@ def test_missing_subtitles_filter_gives_a_clear_error(small, narrated):
     assert not has_filter("subtitles", runner=lambda *a, **k: P("", "Unknown filter 'subtitles'."))
     assert not has_filter("subtitles", runner=lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
     assert has_filter("subtitles")                                  # this machine's ffmpeg has it
-    project, meta = narrated
+
+
+def test_overlay_list_covers_the_whole_video(small, narrated, tmp_path):
+    from cinekahani.assemble.subtitles import _ass_rgba, write_overlay
+    assert _ass_rgba("&H0000E0FF") == (255, 224, 0, 255) and _ass_rgba("&H00000000") == (0, 0, 0, 255)
+    project, _ = narrated
+    tl = load_timeline(project, "review", "en")
+    total = tl["duration"] + 2.5
+    lst = write_overlay(tl, small, get_style("clean"), "en", 1.0, total, tmp_path / "ov")
+    text = lst.read_text()
+    assert text.startswith("ffconcat version 1.0") and text.count("duration") >= 6
+    secs = sum(float(l.split()[1]) for l in text.splitlines() if l.startswith("duration"))
+    assert secs == pytest.approx(total, abs=0.05)
+    pngs = {l.split("'")[1] for l in text.splitlines() if l.startswith("file")}
+    assert len(pngs) > 3 and all(__import__("pathlib").Path(p).is_file() for p in pngs)
+
+
+def test_overlay_needs_raqm_for_hindi(small, monkeypatch):
+    from cinekahani.assemble import subtitles
+    monkeypatch.setattr("cinekahani.visuals.fonts.find_font", lambda script="latin": "/some/font.ttc")
+    monkeypatch.setattr("PIL.features.check", lambda name: False)
+    assert "libraqm" in subtitles.overlay_ready("hi") and subtitles.overlay_ready("en") is None
+    monkeypatch.setattr("cinekahani.visuals.fonts.find_font", lambda script="latin": None)
+    assert "Devanagari font" in subtitles.overlay_ready("hi")
+
+
+def test_build_without_libass_draws_subtitles_itself(small, narrated):
     import subprocess
+    project, meta = narrated
 
-    def runner(cmd, **kw):
-        if "-h" in cmd:
-            return P("", "Unknown filter 'subtitles'.")
-        return subprocess.run(cmd, **kw)
+    def frame(path, t):
+        return subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", str(t), "-i", str(path), "-frames:v", "1",
+                               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
 
-    with pytest.raises(RenderError, match="libass"):
-        build_video(small, project, meta, "review", "en", style_key="clean", runner=runner)
-    assert "libass" in SUBTITLES_HELP
+    with_subs = build_video(small, project, meta, "review", "en", style_key="pop", runner=no_libass())
+    assert with_subs.report["subtitle_mode"] == "overlay" and with_subs.report["checks"] == "passed"
+    drawn = frame(with_subs.video, 4.0)                              # grab it before the next build overwrites the file
+    small.video.subtitles.enabled = False
+    plain = build_video(small, project, meta, "review", "en", style_key="pop", force=True)
+    assert plain.report["subtitle_mode"] == "off"
+    assert drawn != frame(plain.video, 4.0)                          # the text is really drawn
+    assert abs(probe_video(plain.video)["duration"] - with_subs.plan.total_s) < 1.0
+
+
+def test_no_libass_hindi_without_raqm_is_a_clear_error(small, narrated, monkeypatch):
+    project, meta = narrated
+    from cinekahani.assemble import subtitles
+    monkeypatch.setattr(subtitles, "overlay_ready", lambda lang: "Pillow cannot shape Devanagari (libraqm)")
+    with pytest.raises(RenderError, match="libraqm"):
+        build_video(small, project, meta, "review", "en", style_key="clean", runner=no_libass())

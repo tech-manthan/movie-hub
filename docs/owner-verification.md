@@ -14,8 +14,9 @@ against the real thing yet. Do them in this order; each takes minutes.
 | 6 | OpenShorts on Docker | `bash scripts/setup_openshorts.sh`, put `GEMINI_API_KEY` in `.env`, `cinekahani shorts make ...` | The Docker build was not run. The clip `start`/`end` fields are used to check trailer share; if OpenShorts omits them the Short is flagged "unverified". |
 | 7 | TMDB real calls | Add `TMDB_API_KEY`, `cinekahani meta "Dune" --year 2021` | Mocked only. Also read TMDB's commercial-use terms. |
 | 8 | YouTube upload | Create an OAuth *Desktop* client, put id/secret in `.env`, `youtube auth`, approve + schedule a throwaway video | A Google project that has not passed Google's audit can only upload **private** videos. `containsSyntheticMedia` is sent from memory of the API; if YouTube rejects it set `publish.youtube.synthetic_media_flag: false` and tick the box in YouTube Studio. |
-| 9 | Upload-Post | `UPLOADPOST_API_KEY`, `publish.uploadpost.user`, schedule one Short | Field names copied from OpenShorts' own working integration. |
-| 10 | Thermal pause | Long job on the Air; watch `pmset -g therm` | Raise `cooldown.between_chunks_s` |
+| 9 | Instagram Reels | Do the README's *Instagram setup*, `cinekahani instagram whoami`, then approve a Short and `publish now ... --public` on a test account | Ported from reel-engine's working code, but never run from this project. Reels get re-encoded first; send me the error text if processing fails. |
+| 10 | Timed publisher | Install the launchd job from the README; schedule a Short ~30 min ahead; check `logs/publish.log` | Ask me |
+| 11 | Thermal pause | Long job on the Air; watch `pmset -g therm` | Raise `cooldown.between_chunks_s` |
 
 ## Decisions that are yours
 - **Trailer footage** (`trailer fetch`) means downloading from YouTube, which its terms forbid, and studio

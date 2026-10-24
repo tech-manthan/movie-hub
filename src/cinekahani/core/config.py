@@ -8,7 +8,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-ENV_PREFIXES = ("TMDB_", "CINEKAHANI_", "GEMINI_", "OMNIVOICE_", "YOUTUBE_", "UPLOADPOST_")
+ENV_PREFIXES = ("TMDB_", "CINEKAHANI_", "GEMINI_", "OMNIVOICE_", "YOUTUBE_", "META_")
 
 
 class Channel(BaseModel):
@@ -142,17 +142,20 @@ class YoutubeCfg(BaseModel):
     made_for_kids: bool = False
 
 
-class UploadPostCfg(BaseModel):
-    user: str = ""
-    platforms: list[str] = ["instagram", "youtube"]
-    timezone: str = "Asia/Kolkata"
+class InstagramCfg(BaseModel):
+    api_version: str = "v26.0"       # Facebook Login flavour of the Instagram API (graph.facebook.com)
+    thumb_offset_ms: int = 1500      # cover frame; the first frames are often an intro card
+    share_to_feed: bool = True
+    poll_seconds: float = 10
+    poll_attempts: int = 60          # Instagram transcodes the upload; wait up to ~10 minutes
 
 
 class PublishCfg(BaseModel):
-    shorts_via: str = "uploadpost"   # uploadpost (Instagram Reels + YouTube Shorts) | youtube (YouTube only)
+    shorts_targets: list[str] = ["youtube", "instagram"]   # where each Short goes (long videos: YouTube)
+    timezone: str = "Asia/Kolkata"   # default for schedule times
     min_lead_minutes: int = 20       # scheduled times must be at least this far ahead
     youtube: YoutubeCfg = YoutubeCfg()
-    uploadpost: UploadPostCfg = UploadPostCfg()
+    instagram: InstagramCfg = InstagramCfg()
     review_port: int = 8765
 
 

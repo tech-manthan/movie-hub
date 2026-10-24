@@ -26,7 +26,7 @@ from .visuals.plan import GuardrailError
 from .visuals.styles import STYLES
 from .publish import run as publish_run
 from .publish.state import PublishState, ScheduleError, parse_when
-from .publish.uploadpost import UploadPostClient, UploadPostError
+from .publish.instagram import InstagramClient, InstagramError
 from .publish.youtube import YoutubeAuth, YoutubeError, YoutubeUploader
 from .review import queue as review_queue
 from .package.pack import PackageError, build_package, render_for
@@ -424,16 +424,42 @@ publish_app = typer.Typer(help="Phase 6: schedule and upload APPROVED items.", n
 app.add_typer(publish_app, name="publish")
 
 
+def _ig(s: Settings) -> InstagramClient:
+    return InstagramClient(s.publish.instagram, s.root / "token.instagram.json")
+
+
 def _providers(s: Settings, need: set[str]) -> publish_run.Providers:
     p = publish_run.Providers()
-    try:
-        if "youtube" in need:
-            p.youtube = YoutubeUploader(_yt_auth(s), s.publish.youtube)
-        if "uploadpost" in need:
-            p.uploadpost = UploadPostClient(s.env, s.publish.uploadpost)
-    except (YoutubeError, UploadPostError) as exc:
-        _fail(str(exc))
+    if "youtube" in need:
+        p.youtube = YoutubeUploader(_yt_auth(s), s.publish.youtube)
+    if "instagram" in need:
+        p.instagram = _ig(s)
     return p
+
+
+instagram_app = typer.Typer(help="Instagram sign-in (Facebook Login flavour, no third party).", no_args_is_help=True)
+app.add_typer(instagram_app, name="instagram")
+
+
+@instagram_app.command("setup")
+def instagram_setup(ctx: typer.Context, page: Optional[str] = typer.Option(None, help="Facebook Page name, if you have several")):
+    """Turn META_USER_TOKEN (.env) into a non-expiring Page token, stored in token.instagram.json."""
+    s = _settings(ctx)
+    try:
+        info = _ig(s).setup(s.env.get("META_USER_TOKEN", ""), page)
+    except InstagramError as exc:
+        _fail(str(exc))
+    typer.echo(f"connected: @{info['ig_username']} through Page '{info['page_name']}'. You can remove META_USER_TOKEN from .env now.")
+
+
+@instagram_app.command("whoami")
+def instagram_whoami(ctx: typer.Context):
+    """Check the saved Instagram connection still works."""
+    try:
+        info = _ig(_settings(ctx)).whoami()
+    except InstagramError as exc:
+        _fail(str(exc))
+    typer.echo(f"@{info['username']} via Page '{info['page']}', {info['media_count']} posts")
 
 
 @publish_app.command("schedule")
@@ -456,7 +482,7 @@ def publish_schedule(ctx: typer.Context, slug: str, item: str,
 @publish_app.command("run")
 def publish_run_cmd(ctx: typer.Context, slug: Optional[str] = typer.Argument(None),
                     dry_run: bool = typer.Option(False, help="Show what would be uploaded")):
-    """Upload every approved, scheduled item that is not up yet (safe to run repeatedly, e.g. from cron)."""
+    """Upload what is ready. Safe to run repeatedly: a launchd job runs it every 15 minutes (see README)."""
     s = _settings(ctx)
     try:
         projects = _projects(s, slug)
@@ -465,7 +491,7 @@ def publish_run_cmd(ctx: typer.Context, slug: Optional[str] = typer.Argument(Non
             for it in publish_run.due_items(s, p):
                 need |= set(publish_run.targets_for(s, it))
         outcomes = publish_run.run_due(s, projects, _providers(s, need), dry_run=dry_run)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, YoutubeError, InstagramError) as exc:
         _fail(str(exc))
     if not outcomes:
         typer.echo("Nothing due: approve items and schedule them first.")
@@ -489,7 +515,7 @@ def publish_now(ctx: typer.Context, slug: str, item: str,
         it = review_queue.find(s, project, item)
         outcomes = publish_run.publish_item(s, project, item, _providers(s, set(publish_run.targets_for(s, it))),
                                             now=True, public=public)
-    except (FileNotFoundError, review_queue.ReviewError, publish_run.PublishError) as exc:
+    except (FileNotFoundError, review_queue.ReviewError, publish_run.PublishError, YoutubeError, InstagramError) as exc:
         _fail(str(exc))
     bad = 0
     for o in outcomes:
@@ -599,7 +625,7 @@ def doctor(ctx: typer.Context):
     line("YouTube client id/secret", bool(s.env.get("YOUTUBE_CLIENT_ID") and s.env.get("YOUTUBE_CLIENT_SECRET")),
          "see README, Phase 6", needed=False)
     line("YouTube signed in", (s.root / "token.youtube.json").is_file(), "cinekahani youtube auth", needed=False)
-    line("UPLOADPOST_API_KEY (Instagram Reels)", bool(s.env.get("UPLOADPOST_API_KEY")), "add to .env", needed=False)
+    line("Instagram connected", (s.root / "token.instagram.json").is_file(), "cinekahani instagram setup", needed=False)
     raise typer.Exit(0 if ok else 1)
 
 

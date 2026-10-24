@@ -11,11 +11,11 @@ from conftest import FakeLlm
 from test_package import reply
 
 from cinekahani.assemble.build import render_paths
-from cinekahani.core.config import YoutubeCfg, UploadPostCfg
+from cinekahani.core.config import InstagramCfg, YoutubeCfg
 from cinekahani.package.pack import build_package
 from cinekahani.publish import run
 from cinekahani.publish.state import PublishState, ScheduleError, parse_when
-from cinekahani.publish.uploadpost import UploadPostClient, UploadPostError
+from cinekahani.publish.instagram import InstagramClient, InstagramError, check_caption, normalize_for_upload
 from cinekahani.publish.youtube import YoutubeAuth, YoutubeError, YoutubeUploader
 from cinekahani.review import queue
 from cinekahani.visuals.plan import Plan
@@ -232,46 +232,6 @@ def test_upload_privacy_rules_and_errors(tmp_path):
         up.set_thumbnail("V", video)
 
 
-# ---------------- Upload-Post ----------------
-
-def test_uploadpost_fields_and_errors(tmp_path):
-    seen = []
-
-    def handler(req):
-        seen.append(req)
-        return httpx.Response(200, json={"request_id": "r1"})
-
-    cfg = UploadPostCfg(user="cine", platforms=["instagram", "youtube"])
-    c = UploadPostClient({"UPLOADPOST_API_KEY": "K"}, cfg, http=httpx.Client(transport=httpx.MockTransport(handler)),
-                         sleep=lambda s: None)
-    v = tmp_path / "s.mp4"
-    v.write_bytes(b"clip")
-    when = datetime(2026, 11, 3, 12, 30, tzinfo=timezone.utc)
-    assert c.upload(v, title="Title", description="Desc", when=when)["request_id"] == "r1"
-    body = seen[0].content.decode("latin1")
-    assert seen[0].headers["authorization"] == "Apikey K"
-    for needle in ['name="user"', "cine", 'name="platform[]"', "instagram", "youtube", "REELS", "2026-11-03T12:30:00",
-                   'name="timezone"', 'filename="s.mp4"']:
-        assert needle in body
-    assert 'name="privacyStatus"' in body and "public" in body
-    c.upload(v, title="T", description="D")
-    assert "private" in seen[1].content.decode("latin1")
-    with pytest.raises(UploadPostError, match="UPLOADPOST_API_KEY"):
-        UploadPostClient({}, cfg)
-    with pytest.raises(UploadPostError, match="user"):
-        UploadPostClient({"UPLOADPOST_API_KEY": "K"}, UploadPostCfg())
-    n = []
-    bad = UploadPostClient({"UPLOADPOST_API_KEY": "K"}, cfg, sleep=lambda s: None, http=httpx.Client(
-        transport=httpx.MockTransport(lambda r: (n.append(1), httpx.Response(503))[1])))
-    with pytest.raises(UploadPostError):
-        bad.upload(v, title="T", description="D")
-    assert len(n) == 3
-    reject = UploadPostClient({"UPLOADPOST_API_KEY": "K"}, cfg, http=httpx.Client(
-        transport=httpx.MockTransport(lambda r: httpx.Response(401, text="bad key"))))
-    with pytest.raises(UploadPostError, match="bad key"):
-        reject.upload(v, title="T", description="D")
-
-
 # ---------------- publish gate ----------------
 
 class FakeYT:
@@ -288,17 +248,24 @@ class FakeYT:
         self.calls.append(("thumb", vid))
 
 
-class FakeUP:
-    def __init__(self):
-        self.calls = []
+class FakeIG:
+    def __init__(self, fail=False):
+        self.calls, self.fail = [], fail
 
-    def upload(self, video, **kw):
-        self.calls.append(kw)
-        return {"request_id": "r"}
+    def publish_reel(self, video, caption):
+        if self.fail:
+            raise InstagramError("token expired")
+        self.calls.append((video.name, caption))
+        return {"media_id": "M1", "permalink": "https://instagram.com/reel/abc"}
+
+
+@pytest.fixture(autouse=True)
+def no_reencode(monkeypatch):
+    monkeypatch.setattr(run, "normalize_for_upload", lambda src, dst, **kw: src)
 
 
 def test_publish_requires_approval_and_a_schedule(small, packaged):
-    prov = run.Providers(youtube=FakeYT(), uploadpost=FakeUP())
+    prov = run.Providers(youtube=FakeYT(), instagram=FakeIG())
     with pytest.raises(queue.ReviewError, match="without your approval"):
         run.publish_item(small, packaged, "long:review.en", prov, now=True)
     assert prov.youtube.calls == []
@@ -310,8 +277,8 @@ def test_publish_requires_approval_and_a_schedule(small, packaged):
 
 
 def test_publish_now_and_scheduled_paths(small, packaged):
-    yt, up = FakeYT(), FakeUP()
-    prov = run.Providers(youtube=yt, uploadpost=up)
+    yt, ig = FakeYT(), FakeIG()
+    prov = run.Providers(youtube=yt, instagram=ig)
     queue.decide(small, packaged, "long:review.en", "approved")
     out = run.publish_item(small, packaged, "long:review.en", prov, now=True)
     assert out[0].status == "uploaded" and yt.calls[0]["publish_at"] is None and yt.calls[0]["public"] is False
@@ -319,19 +286,41 @@ def test_publish_now_and_scheduled_paths(small, packaged):
     again = run.publish_item(small, packaged, "long:review.en", prov, now=True)
     assert again[0].status == "skipped" and len([c for c in yt.calls if isinstance(c, dict)]) == 1
 
-    queue.decide(small, packaged, "short:review.en:1", "approved")
+    sid = "short:review.en:1"
+    queue.decide(small, packaged, sid, "approved")
     when = parse_when(FUTURE, "Asia/Kolkata")
-    PublishState(packaged).schedule("short:review.en:1", when, "Asia/Kolkata", ["uploadpost"])
-    out = run.publish_item(small, packaged, "short:review.en:1", prov)
-    assert out[0].status == "scheduled" and out[0].target == "uploadpost" and up.calls[0]["when"] == when
+    PublishState(packaged).schedule(sid, when, "Asia/Kolkata", ["youtube", "instagram"])
+    out = {o.target: o for o in run.publish_item(small, packaged, sid, prov)}
+    assert out["youtube"].status == "scheduled" and yt.calls[-1]["publish_at"] == when   # YouTube holds it
+    assert out["instagram"].status == "waiting" and ig.calls == []                      # Instagram cannot, so we wait
+    later = lambda: when + timedelta(minutes=1)
+    out = {o.target: o for o in run.publish_item(small, packaged, sid, prov, clock=later)}
+    assert out["youtube"].status == "skipped" and out["instagram"].status == "uploaded"
+    assert ig.calls == [("short-01.mp4", ig.calls[0][1])] and "#Shorts" not in ig.calls[0][1]
     st = json.loads((packaged.root / "publish.json").read_text())["items"]
     assert st["long:review.en"]["results"]["youtube"]["video_id"] == "VID9"
+    assert st[sid]["results"]["instagram"]["url"] == "https://instagram.com/reel/abc"
+
+
+def test_instagram_needs_explicit_public_when_posted_now(small, packaged):
+    yt, ig = FakeYT(), FakeIG()
+    prov = run.Providers(youtube=yt, instagram=ig)
+    queue.decide(small, packaged, "short:review.en:1", "approved")
+    out = {o.target: o for o in run.publish_item(small, packaged, "short:review.en:1", prov, now=True)}
+    assert out["youtube"].status == "uploaded" and yt.calls[-1]["public"] is False       # private on YouTube
+    assert out["instagram"].status == "skipped" and "--public" in out["instagram"].detail and ig.calls == []
+    out = {o.target: o for o in run.publish_item(small, packaged, "short:review.en:1", prov, now=True, public=True)}
+    assert out["instagram"].status == "uploaded"
 
 
 def test_failed_upload_is_recorded_not_raised(small, packaged):
     queue.decide(small, packaged, "long:review.en", "approved")
     out = run.publish_item(small, packaged, "long:review.en", run.Providers(youtube=FakeYT(fail=True)), now=True)
     assert out[0].status == "failed" and "boom" in out[0].detail
+    queue.decide(small, packaged, "short:review.en:1", "approved")
+    bad = run.publish_item(small, packaged, "short:review.en:1", run.Providers(youtube=FakeYT(), instagram=FakeIG(fail=True)),
+                           now=True, public=True)
+    assert {o.target: o.status for o in bad} == {"youtube": "uploaded", "instagram": "failed"}   # one failure does not stop the other
     assert PublishState(packaged).get("long:review.en")["results"]["youtube"]["status"] == "failed"
     ok = run.publish_item(small, packaged, "long:review.en", run.Providers(youtube=FakeYT()), now=True)
     assert ok[0].status == "uploaded"                                # a failed attempt can be retried
@@ -339,11 +328,11 @@ def test_failed_upload_is_recorded_not_raised(small, packaged):
 
 def test_run_due_only_uploads_approved_scheduled_items(small, packaged):
     yt = FakeYT()
-    prov = run.Providers(youtube=yt, uploadpost=FakeUP())
+    prov = run.Providers(youtube=yt, instagram=FakeIG())
     when = parse_when(FUTURE, "UTC")
     state = PublishState(packaged)
     state.schedule("long:review.en", when, "UTC", ["youtube"])        # scheduled but NOT approved
-    state.schedule("short:review.en:1", when, "UTC", ["uploadpost"])
+    state.schedule("short:review.en:1", when, "UTC", ["youtube", "instagram"])
     assert run.run_due(small, [packaged], prov) == []
     queue.decide(small, packaged, "long:review.en", "approved")
     res = run.run_due(small, [packaged], prov)
@@ -353,8 +342,134 @@ def test_run_due_only_uploads_approved_scheduled_items(small, packaged):
     assert run.run_due(small, [packaged], prov) == []                 # unapproved edits never go out
 
 
-def test_expired_schedule_is_refused(small, packaged):
+def test_schedule_time_passed_means_due_now(small, packaged):
+    yt = FakeYT()
     queue.decide(small, packaged, "long:review.en", "approved")
     PublishState(packaged).schedule("long:review.en", datetime(2020, 1, 1, tzinfo=timezone.utc), "UTC", ["youtube"])
-    with pytest.raises(run.PublishError, match="passed"):
-        run.publish_item(small, packaged, "long:review.en", run.Providers(youtube=FakeYT()))
+    out = run.publish_item(small, packaged, "long:review.en", run.Providers(youtube=yt))
+    assert out[0].status == "uploaded" and yt.calls[0]["publish_at"] is None and yt.calls[0]["public"] is True
+
+
+# ---------------- Instagram ----------------
+
+class FakeMeta:
+    def __init__(self, statuses=("IN_PROGRESS", "FINISHED"), reject_offset=False, publish_status=200):
+        self.statuses, self.reject_offset, self.publish_status = list(statuses), reject_offset, publish_status
+        self.log, self.container_forms = [], []
+
+    def handle(self, req: httpx.Request):
+        path, host = req.url.path, req.url.host
+        self.log.append((req.method, host, path))
+        if path.endswith("/me/accounts"):
+            return httpx.Response(200, json={"data": [
+                {"id": "9", "name": "Other"},
+                {"id": "1", "name": "Cine Kahani", "access_token": "PT",
+                 "instagram_business_account": {"id": "IG1", "username": "cinekahani"}}]})
+        if path.endswith("/IG1/media") and req.method == "POST":
+            form = urllib.parse.parse_qs(req.content.decode())
+            self.container_forms.append(form)
+            if self.reject_offset and "thumb_offset" in form:
+                return httpx.Response(400, json={"error": {"message": "bad thumb_offset", "code": 100}})
+            return httpx.Response(200, json={"id": "C1"})
+        if host == "rupload.facebook.com":
+            assert req.headers["authorization"] == "OAuth PT" and req.headers["offset"] == "0"
+            assert req.headers["file_size"] == str(len(req.content))
+            return httpx.Response(200, json={"success": True})
+        if path.endswith("/C1"):
+            return httpx.Response(200, json={"status_code": self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]})
+        if path.endswith("/IG1/media_publish"):
+            if self.publish_status != 200:
+                return httpx.Response(self.publish_status, json={"error": {"message": "nope", "code": 9007}})
+            return httpx.Response(200, json={"id": "M7"})
+        if path.endswith("/M7"):
+            return httpx.Response(200, json={"permalink": "https://instagram.com/reel/xyz"})
+        if path.endswith("/IG1"):
+            return httpx.Response(200, json={"username": "cinekahani", "media_count": 12})
+        return httpx.Response(404, json={"error": {"message": "unknown " + path}})
+
+
+def ig_client(tmp_path, meta, **cfg):
+    sleeps = []
+    c = InstagramClient(InstagramCfg(**cfg), tmp_path / "token.instagram.json",
+                        http=httpx.Client(transport=httpx.MockTransport(meta.handle)), sleep=sleeps.append)
+    c.slept = sleeps
+    return c
+
+
+def test_instagram_setup_whoami_and_publish(tmp_path):
+    meta = FakeMeta()
+    c = ig_client(tmp_path, meta)
+    with pytest.raises(InstagramError, match="not connected"):
+        c.whoami()
+    with pytest.raises(InstagramError, match="META_USER_TOKEN"):
+        c.setup("")
+    info = c.setup("USERTOKEN")
+    assert info["ig_username"] == "cinekahani" and info["page_name"] == "Cine Kahani"
+    assert oct(os.stat(tmp_path / "token.instagram.json").st_mode)[-3:] == "600"
+    assert c.whoami()["media_count"] == 12
+    video = tmp_path / "r.mp4"
+    video.write_bytes(os.urandom(5000))
+    res = c.publish_reel(video, "A caption #Inception")
+    assert res == {"media_id": "M7", "permalink": "https://instagram.com/reel/xyz", "username": "cinekahani"}
+    form = meta.container_forms[0]
+    assert form["media_type"] == ["REELS"] and form["upload_type"] == ["resumable"] and form["thumb_offset"] == ["1500"]
+    assert form["caption"] == ["A caption #Inception"] and form["access_token"] == ["PT"]
+    assert c.slept == [10]                                                # one wait while IN_PROGRESS
+    assert [m for m in meta.log if m[2].endswith("media_publish")]
+    with pytest.raises(InstagramError, match="linked Instagram"):
+        c.setup("USERTOKEN", page_name="Other")
+
+
+def test_instagram_retries_without_cover_offset_and_reports_failures(tmp_path):
+    meta = FakeMeta(reject_offset=True)
+    c = ig_client(tmp_path, meta)
+    c.setup("T")
+    video = tmp_path / "r.mp4"
+    video.write_bytes(b"x" * 100)
+    c.publish_reel(video, "cap")
+    assert "thumb_offset" in meta.container_forms[0] and "thumb_offset" not in meta.container_forms[1]
+
+    err = ig_client(tmp_path, FakeMeta(statuses=("ERROR",)))
+    with pytest.raises(InstagramError, match="could not process"):
+        err.publish_reel(video, "cap")
+    slow = ig_client(tmp_path, FakeMeta(statuses=("IN_PROGRESS",)), poll_attempts=3)
+    with pytest.raises(InstagramError, match="timed out"):
+        slow.publish_reel(video, "cap")
+    assert slow.slept == [10, 10, 10]
+    bad = FakeMeta(publish_status=400)
+    c2 = ig_client(tmp_path, bad)
+    with pytest.raises(InstagramError, match="nope"):
+        c2.publish_reel(video, "cap")
+    assert len([m for m in bad.log if m[2].endswith("media_publish")]) == 1      # publishing is never retried
+
+
+def test_caption_rules():
+    assert check_caption("  hi  ") == "hi"
+    with pytest.raises(InstagramError, match="2200"):
+        check_caption("x" * 2201)
+    with pytest.raises(InstagramError, match="30 hashtags"):
+        check_caption(" ".join(f"#t{i}" for i in range(31)))
+
+
+def test_normalize_matches_the_instagram_spec_with_real_ffmpeg(tmp_path):
+    import subprocess
+    src = tmp_path / "in.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=360x640:rate=24:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-pix_fmt", "yuvj420p", "-c:a", "mp3", str(src)],
+                   check=True)
+    dst = normalize_for_upload(src, tmp_path / "out" / "o.mp4")
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(dst)],
+                                      capture_output=True, text=True).stdout)
+    v = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    a = next(s for s in probe["streams"] if s["codec_type"] == "audio")
+    assert (v["width"], v["height"], v["pix_fmt"], v["codec_name"], v["profile"]) == (1080, 1920, "yuv420p", "h264", "High")
+    assert v["r_frame_rate"] == "30/1" and a["codec_name"] == "aac" and a["sample_rate"] == "48000" and a["channels"] == 2
+    assert dst.read_bytes()[:64].find(b"ftyp") >= 0
+    mtime = dst.stat().st_mtime_ns
+    assert normalize_for_upload(src, dst).stat().st_mtime_ns == mtime                   # cached, not re-encoded
+
+    class Bad:
+        returncode, stderr = 1, "bad input"
+
+    with pytest.raises(InstagramError, match="bad input"):
+        normalize_for_upload(src, tmp_path / "x.mp4", runner=lambda *a, **k: Bad())

@@ -60,6 +60,7 @@ cinekahani package inception-2010 -f ending_explained -l en
 # Phase 6: review, schedule, upload
 cinekahani review serve                            # http://127.0.0.1:8765 : watch, edit, approve, schedule
 cinekahani youtube auth                            # once
+cinekahani instagram setup                         # once (see "Instagram setup" below)
 cinekahani publish run                             # uploads approved + scheduled items
 
 cinekahani status                                  # where every video stands
@@ -114,12 +115,41 @@ after you edit `thumbnail_text`. Edits are protected like scripts.
   Every change needs a per-run token and a local origin.
 - An approval is tied to the exact video, thumbnail and text. **Editing anything afterwards withdraws it.**
 - Approval is blocked while a check fails (script not approved, `[VERIFY]` left, guardrails, music license, title too long...).
-- `publish schedule SLUG ITEM --at "2026-11-03 18:00" --tz Asia/Kolkata` then `publish run`: the video is uploaded
-  now and the platform holds it until then. `publish now ... --yes` uploads immediately and private unless `--public`.
-- Long videos go to YouTube directly (resumable upload, thumbnail, scheduled `publishAt`). Shorts/Reels go through
-  Upload-Post by default, because Instagram's API needs a public video URL that a laptop does not have.
+- `publish schedule SLUG ITEM --at "2026-11-03 18:00" --tz Asia/Kolkata`, then `publish run`.
+  `publish now ... --yes` uploads immediately: private on YouTube unless `--public`; Instagram has no private mode,
+  so it is skipped unless you add `--public`.
+- **No third-party service.** Long videos go to YouTube (resumable upload, thumbnail). Each Short goes to YouTube
+  Shorts and Instagram Reels (`publish.shorts_targets`). Both are our own code talking to Google and Meta.
+- **Scheduling differs by platform.** YouTube holds an uploaded video until its time. Instagram's API cannot
+  schedule, so a Reel is posted by the first `publish run` after its time. Install the timed job below so that happens
+  without you. If the Mac is asleep at the time, it posts when the Mac wakes.
 - One YouTube upload costs 1,600 of the 10,000 daily API quota units, so about 6 uploads a day.
 - A Google Cloud project that has not passed Google's audit can only upload **private** videos.
+- Instagram needs the video re-encoded to its spec (H.264 High, yuv420p, 30 fps, 1080x1920, AAC 128k); we do
+  this automatically into `clips/<...>/upload/`.
+
+### Run the publisher automatically (macOS)
+```bash
+mkdir -p logs ~/Library/LaunchAgents
+sed "s|__ROOT__|$PWD|g" scripts/com.cinekahani.publish.plist > ~/Library/LaunchAgents/com.cinekahani.publish.plist
+launchctl load ~/Library/LaunchAgents/com.cinekahani.publish.plist     # stop it: launchctl unload ...
+```
+It runs `scripts/publish.sh` every 15 minutes, logs to `logs/publish.log` and shows a notification when something
+goes out or fails. It only ever uploads items you approved and scheduled.
+
+### Instagram setup (once)
+This is the same Facebook-Login route your `reel-engine` project uses (steps recorded in its `docs/GUIDE.md`, section 3).
+You can reuse the same Meta app; a different Instagram account needs its own Facebook Page.
+1. Instagram account -> **Professional** (Creator or Business).
+2. A **Facebook Page** linked to that Instagram account (Page settings -> Linked accounts -> Instagram).
+3. A **Meta developer app** (developers.facebook.com/apps) with the permissions `instagram_basic`,
+   `instagram_content_publish`, `pages_show_list`, `pages_read_engagement`, `business_management`.
+   Development mode is enough for your own account.
+4. Graph API Explorer -> your app -> **Get User Access Token** with those permissions -> generate, then extend it to a
+   long-lived token. Choose only the Page and Instagram account you will post to.
+5. Put it in `.env` as `META_USER_TOKEN=...`, then run `cinekahani instagram setup`. It stores a Page token in
+   `token.instagram.json` (git-ignored, does not expire). You can delete `META_USER_TOKEN` afterwards.
+6. `cinekahani instagram whoami` confirms it works.
 
 ## Project layout
 ```
@@ -134,7 +164,7 @@ src/cinekahani/
   shorts/    OpenShorts client, Docker service, Shorts step
   package/   titles/description/tags/chapters and thumbnails
   review/    approval queue + local dashboard
-  publish/   YouTube, Upload-Post, schedule state, publish gate
+  publish/   YouTube, Instagram, schedule state, publish gate
 projects/<slug>/  metadata script audio visuals renders clips package manifest.json review.json publish.json
 ```
 Each step is its own module and CLI command, runs alone, retries on API failures, logs to the terminal and

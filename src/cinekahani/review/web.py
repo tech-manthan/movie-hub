@@ -147,8 +147,8 @@ def create_app(settings: Settings) -> FastAPI:
 <p class="row"><button class="go" id="approve">Approve</button><button class="no" id="reject">Reject</button></p></div>
 <div class="card"><h3>Schedule</h3><div class="row"><div class="grow"><label>Publish at (local time)</label>
 <input id="at" placeholder="2026-11-03 18:00" value="{esc(local_time(sched['at'], sched.get('tz', 'UTC')) if sched else '')}"></div>
-<div class="grow"><label>Timezone</label><input id="tz" value="{esc(sched.get('tz') or settings.publish.uploadpost.timezone)}"></div></div>
-<p><button id="sched">Save schedule</button> <small>Uploads happen with `cinekahani publish run`; the platform then holds the video until this time.
+<div class="grow"><label>Timezone</label><input id="tz" value="{esc(sched.get('tz') or settings.publish.timezone)}"></div></div>
+<p><button id="sched">Save schedule</button> <small>`cinekahani publish run` uploads it: YouTube holds the video until this time, Instagram is posted by the run that follows it.
 Targets: {esc(", ".join(targets_for(settings, it)))}</small></p><ul>{results}</ul></div>
 <p id="msg" role="status"></p>
 <script>

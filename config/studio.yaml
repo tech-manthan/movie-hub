@@ -96,15 +96,17 @@ package:
   ai_voice_note: "Narration: my own voice, recreated with AI voice cloning."   # set "" to drop the line
   hashtags: 3
 
-# ---- Phase 6: publishing ----
+# ---- Phase 6: publishing (direct to YouTube and Instagram, no third-party service) ----
 publish:
-  shorts_via: uploadpost     # uploadpost (Instagram Reels + YouTube Shorts) | youtube
+  shorts_targets: [youtube, instagram]   # where each Short goes; long videos go to YouTube
+  timezone: Asia/Kolkata     # default for schedule times
   min_lead_minutes: 20
   review_port: 8765
   youtube:
     category_id: "24"
     privacy: private         # uploads are private until scheduled or published
     synthetic_media_flag: true   # sets containsSyntheticMedia; set false if the API rejects it
-  uploadpost:
-    user: ""                 # your Upload-Post profile name (put it in config/studio.local.yaml)
-    platforms: [instagram, youtube]
+  instagram:
+    api_version: v26.0       # Facebook Login flavour of the Instagram API
+    thumb_offset_ms: 1500    # cover frame
+    share_to_feed: true

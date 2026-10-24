@@ -168,3 +168,22 @@ def test_cli_voice_and_narrate(tmp_path, monkeypatch):
     assert load_settings(tmp_path).voice.profile == {"en": "p-new", "hi": "p-new"}
     bad = r.invoke(cli.app, base + ["narrate", "nothing-1999"])
     assert bad.exit_code == 1 and "No project" in bad.output
+
+
+def test_cli_voice_use_existing_profile(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from cinekahani import cli
+    from cinekahani.core.config import load_settings
+
+    fake = FakeVoiceStudio()
+    real = cli.VoiceStudioClient
+    monkeypatch.setattr(cli, "VoiceStudioClient", lambda cfg, env=None: real(cfg, env, transport=fake.transport, sleep=lambda s: None))
+    (tmp_path / "config").mkdir()
+    r, base = CliRunner(), ["--root", str(tmp_path)]
+    out = r.invoke(cli.app, base + ["voice", "use", "ME", "--langs", "en"])           # name match ignores case
+    assert out.exit_code == 0 and "p1" in out.output
+    assert load_settings(tmp_path).voice.profile == {"en": "p1"}
+    assert r.invoke(cli.app, base + ["voice", "use", "p1"]).exit_code == 0           # id match
+    assert load_settings(tmp_path).voice.profile == {"en": "p1", "hi": "p1"}
+    bad = r.invoke(cli.app, base + ["voice", "use", "nobody"])
+    assert bad.exit_code == 1 and "me (p1)" in bad.output

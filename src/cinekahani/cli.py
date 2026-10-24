@@ -155,6 +155,27 @@ def voice_setup(ctx: typer.Context, wav: Path = typer.Option(..., exists=True, h
     typer.echo(f"voice '{name}' saved as {pid}; recorded in {path}")
 
 
+@voice_app.command("use")
+def voice_use(ctx: typer.Context, voice: str = typer.Argument(..., help="Name or id of a voice already saved in VoiceStudio"),
+              langs: str = typer.Option("en,hi", help="Languages that should use this voice")):
+    """Use a voice you already cloned inside VoiceStudio (no new recording needed)."""
+    s = _settings(ctx)
+    try:
+        profiles = VoiceStudioClient(s.voice, s.env).profiles()
+    except VoiceError as exc:
+        _fail(str(exc))
+    want = voice.strip().casefold()
+    hits = [p for p in profiles if str(p.get("id", "")).casefold() == want or str(p.get("name", "")).casefold() == want]
+    if not hits:
+        names = ", ".join(f"{p.get('name')} ({p.get('id')})" for p in profiles) or "none saved yet"
+        _fail(f"No saved voice called '{voice}'. VoiceStudio has: {names}")
+    if len(hits) > 1:
+        _fail("More than one voice matches; use the id: " + ", ".join(str(p.get("id")) for p in hits))
+    pick = hits[0]
+    path = save_local(s.root, {"voice": {"profile": {lg.strip(): str(pick["id"]) for lg in langs.split(",") if lg.strip()}}})
+    typer.echo(f"using '{pick.get('name')}' ({pick['id']}) for {langs}; saved in {path}")
+
+
 @app.command()
 def narrate(ctx: typer.Context, slug: str, format: str = typer.Option("review", "--format", "-f"),
             lang: str = typer.Option("both", "--lang", "-l", help="en, hi or both"),
